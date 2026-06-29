@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 from telegram.ext import Application
 from handlers import register_handlers
-
+from keep_alive import keep_alive
 load_dotenv()
 
 # ─── تنظیمات ────────────────────────────────────────────────────────────────
@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 
 # ─── اجرا ────────────────────────────────────────────────────────────────────
 def main():
+    keep_alive()
     app = Application.builder().token(BOT_TOKEN).build()
     register_handlers(app)
     logger.info("ربات در حال اجرا است...")
