@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from config import ASSETS
 
 load_dotenv()
 
