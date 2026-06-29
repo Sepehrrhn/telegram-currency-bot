@@ -1,0 +1,119 @@
+from config import ASSETS
+from scraper import fetch_prices
+from telegram import Update
+from keyboards import main_keyboard, asset_keyboard
+from telegram.ext import (
+    ContextTypes,
+    CommandHandler,
+    CallbackQueryHandler,
+)
+
+
+# ─── فرمت قیمت ───────────────────────────────────────────────────────────────
+def format_price(asset, value: str) -> str:
+    if value.startswith(("❌", "⚠️")):
+        return f"*{asset.label}*\n{value}"
+    return f"*{asset.label}*\n💰 {value} ریال"
+
+
+def format_all(prices: dict) -> str:
+    lines = ["📊 *قیمت‌های لحظه‌ای*\n"]
+    for key, asset in ASSETS.items():
+        value = prices.get(key, "⚠️ یافت نشد")
+        lines.append(format_price(asset, value))
+    return "\n\n".join(lines)
+
+
+# ─── هندلرها ─────────────────────────────────────────────────────────────────
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 *سلام\\!*\n\n"
+        "به ربات قیمت ارز و طلا خوش آمدید\\.\n\n"
+        "یکی از گزینه‌های زیر را انتخاب کنید:"
+    )
+    await update.message.reply_text(
+        text,
+        parse_mode="MarkdownV2",
+        reply_markup=main_keyboard(),
+    )
+
+
+def create_asset_handler(key: str):
+    async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        prices = fetch_prices()
+        asset = ASSETS[key]
+        value = prices.get(key, "⚠️ یافت نشد")
+        text = format_price(asset, value)
+        await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=asset_keyboard(key),
+        )
+    return handler
+
+
+async def send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    prices = fetch_prices()
+    text = format_all(prices)
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=main_keyboard(),
+    )
+
+
+# ─── هندلر دکمه‌های شیشه‌ای ──────────────────────────────────────────────────
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+
+    prices = fetch_prices()
+
+    if data == "all":
+        text = format_all(prices)
+        await query.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(),
+        )
+    elif data == "back":
+        text = (
+            "👋 *سلام!*\n\n"
+            "به ربات قیمت ارز و طلا خوش آمدید.\n\n"
+            "یکی از گزینه‌های زیر را انتخاب کنید:"
+        )
+        await query.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=main_keyboard(),
+        )
+    elif data in ASSETS:
+        asset = ASSETS[data]
+        value = prices.get(data, "⚠️ یافت نشد")
+        text = format_price(asset, value)
+        await query.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=asset_keyboard(data),
+        )
+    else:
+        await query.answer("دستور ناشناخته")
+
+
+# ─── ثبت هندلرها ─────────────────────────────────────────────────────────────
+def register_handlers(app):
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("all", send_all))
+    app.add_handler(CommandHandler("market", send_all))
+
+    for asset in ASSETS.values():
+        app.add_handler(
+            CommandHandler(
+                asset.command,
+                create_asset_handler(asset.key),
+            )
+        )
+
+    app.add_handler(CallbackQueryHandler(button_handler))
