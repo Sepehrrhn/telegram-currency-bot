@@ -16,6 +16,7 @@ class Asset:
     key: str
     label: str
     command: str
+    description: str
     button: str
     keywords: list[str]
     minimum: int
@@ -27,6 +28,7 @@ ASSETS = {
         key="usd",
         label="💵 دلار آمریکا",
         command="usd",
+        description="قیمت دلار آمریکا",
         button="💵 دلار",
         keywords=["دلار آمریکا", "دلار"],
         minimum=500000
@@ -36,6 +38,7 @@ ASSETS = {
         key="eur",
         label="💶 یورو",
         command="eur",
+        description="قیمت یورو",
         button="💶 یورو",
         keywords=["یورو"],
         minimum=500000
@@ -45,6 +48,7 @@ ASSETS = {
         key="gold",
         label="🥇 طلای ۱۸ عیار",
         command="gold",
+        description="قیمت طلای ۱۸ عیار",
         button="🥇 طلا",
         keywords=["طلای ۱۸ عیار", "طلا"],
         minimum=5000000

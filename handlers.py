@@ -6,6 +6,8 @@ from telegram.ext import (
     ContextTypes,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
 )
 
 
@@ -59,6 +61,43 @@ async def send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text,
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
+    )
+
+
+# ─── هندلر تشخیص کلیدواژه در متن پیام ────────────────────────────────────────
+def find_asset_by_text(text: str):
+    """
+    متن پیام را با کلیدواژه‌های هر دارایی مقایسه می‌کند.
+    اگر کلیدواژه‌ای پیدا شود، آن asset را برمی‌گرداند، در غیر این صورت None.
+    کلیدواژه‌های طولانی‌تر اول چک می‌شوند (مثلاً "دلار آمریکا" قبل از "دلار")
+    تا تطبیق دقیق‌تر اولویت داشته باشد.
+    """
+    text = text.strip()
+
+    for asset in ASSETS.values():
+        sorted_keywords = sorted(asset.keywords, key=len, reverse=True)
+        for keyword in sorted_keywords:
+            if keyword in text:
+                return asset
+    return None
+
+
+async def keyword_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+
+    asset = find_asset_by_text(update.message.text)
+    if not asset:
+        return
+
+    prices = fetch_prices()
+    value = prices.get(asset.key, "⚠️ یافت نشد")
+    text = format_price(asset, value)
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=asset_keyboard(asset.key),
     )
 
 
@@ -117,3 +156,11 @@ def register_handlers(app):
         )
 
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # هندلر کلیدواژه: باید آخر از همه ثبت شود تا با دستورات تداخل نکند
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            keyword_handler,
+        )
+    )
