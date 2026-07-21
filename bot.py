@@ -11,9 +11,11 @@ from telegram import BotCommand
 from telegram.ext import Application
 from telegram.request import HTTPXRequest
 
+from admin import register_admin_handlers
 from config import ASSETS
 from handlers import register_handlers
 from keep_alive import keep_alive
+from scraper import start_scraper_loop
 
 load_dotenv()
 
@@ -46,6 +48,9 @@ async def setup_commands(app: Application):
     commands.append(BotCommand("all", "نمایش همه قیمت‌ها"))
     commands.append(BotCommand("market", "نمایش همه قیمت‌ها"))
     commands.append(BotCommand("start", "شروع کار با ربات"))
+    commands.append(BotCommand("myid", "دریافت آیدی عددی شما و گروه"))
+    # توجه: دستور /admin عمداً به منوی عمومی اضافه نمی‌شود تا وجود پنل مدیریت
+    # برای کاربران عادی نمایان نباشد؛ اما همچنان با تایپ دستی /admin کار می‌کند.
 
     await app.bot.set_my_commands(commands)
     logger.info("لیست دستورات ربات ثبت شد.")
@@ -78,7 +83,14 @@ def build_application() -> Application:
 def main():
     keep_alive()  # سرور Flask سبک برای زنده نگه‌داشتن سرویس روی Render
 
+    start_scraper_loop()  # حلقه پس‌زمینه‌ی اسکرپ قیمت‌ها هر ۳۰ ثانیه یک‌بار
+
     app = build_application()
+
+    # نکته: ثبت هندلرهای ادمین باید قبل از register_handlers انجام شود، چون
+    # هندلر عمومی دکمه‌های شیشه‌ای (button_handler) بدون pattern ثبت می‌شود و
+    # اگر زودتر ثبت شود، جلوی رسیدن callback هایی با پیشوند admin: را می‌گیرد.
+    register_admin_handlers(app)
     register_handlers(app)
 
     logger.info("ربات در حال اجرا است...")

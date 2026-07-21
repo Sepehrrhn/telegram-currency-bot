@@ -1,5 +1,7 @@
+import storage
+from admin import is_admin
 from config import ASSETS
-from scraper import fetch_prices
+from scraper import get_prices
 from telegram import Update
 from keyboards import main_keyboard, asset_keyboard
 from telegram.ext import (
@@ -26,8 +28,40 @@ def format_all(prices: dict) -> str:
     return "\n\n".join(lines)
 
 
+# ─── کنترل دسترسی (ثبت کاربر/گروه + بررسی مجاز بودن گروه) ───────────────────
+async def _track_and_check_access(update: Update) -> bool:
+    """
+    این تابع در همه‌ی هندلرهای اصلی صدا زده می‌شود:
+    - کاربر فعلی را در لیست کاربران ثبت/به‌روزرسانی می‌کند.
+    - چت‌های خصوصی همیشه مجازند.
+    - مدیر (ADMIN_IDS) همیشه مجاز است، در هر گروهی.
+    - سایر گروه‌ها فقط اگر از پنل ادمین تایید شده باشند مجازند؛ در غیر
+      این صورت گروه (اگر برای اولین‌بار است) ثبت شده و False برگردانده می‌شود.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if user:
+        storage.register_user(user.id, user.username, user.first_name)
+
+    if not chat:
+        return True
+
+    if chat.type == "private":
+        return True
+
+    if user and is_admin(user.id):
+        return True
+
+    storage.register_group(chat.id, chat.title)
+    return storage.is_group_allowed(chat.id)
+
+
 # ─── هندلرها ─────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _track_and_check_access(update):
+        return
+
     text = (
         "👋 *سلام\\!*\n\n"
         "به ربات قیمت ارز و طلا خوش آمدید\\.\n\n"
@@ -42,7 +76,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def create_asset_handler(key: str):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        prices = fetch_prices()
+        if not await _track_and_check_access(update):
+            return
+
+        prices = get_prices()
         asset = ASSETS[key]
         value = prices.get(key, "⚠️ یافت نشد")
         text = format_price(asset, value)
@@ -55,13 +92,32 @@ def create_asset_handler(key: str):
 
 
 async def send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    prices = fetch_prices()
+    if not await _track_and_check_access(update):
+        return
+
+    prices = get_prices()
     text = format_all(prices)
     await update.message.reply_text(
         text,
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
+
+
+async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    دستور کمکی برای گرفتن آیدی عددی کاربر و آیدی عددی گروه. این دستور عمداً
+    از کنترل دسترسی گروه‌ها مستثنی است، چون دقیقاً برای این ساخته شده که
+    مالک بتواند آیدی یک گروهِ هنوز-تاییدنشده را بگیرد و در پنل ادمین تاییدش کند.
+    """
+    user = update.effective_user
+    chat = update.effective_chat
+
+    lines = [f"🆔 آیدی عددی شما: `{user.id}`"]
+    if chat and chat.type != "private":
+        lines.append(f"🆔 آیدی عددی این گروه: `{chat.id}`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ─── هندلر تشخیص کلیدواژه در متن پیام ────────────────────────────────────────
@@ -90,7 +146,11 @@ async def keyword_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not asset:
         return
 
-    prices = fetch_prices()
+    # در گروه‌های غیرمجاز، عمداً بدون پاسخ باقی می‌گذاریم تا اسپم نشود
+    if not await _track_and_check_access(update):
+        return
+
+    prices = get_prices()
     value = prices.get(asset.key, "⚠️ یافت نشد")
     text = format_price(asset, value)
 
@@ -104,11 +164,16 @@ async def keyword_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── هندلر دکمه‌های شیشه‌ای ──────────────────────────────────────────────────
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+
+    if not await _track_and_check_access(update):
+        await query.answer()
+        return
+
     await query.answer()
 
     data = query.data
 
-    prices = fetch_prices()
+    prices = get_prices()
 
     if data == "all":
         text = format_all(prices)
@@ -146,6 +211,7 @@ def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("all", send_all))
     app.add_handler(CommandHandler("market", send_all))
+    app.add_handler(CommandHandler("myid", myid))
 
     for asset in ASSETS.values():
         app.add_handler(
