@@ -1,18 +1,11 @@
 import os
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
-
-# این فایل ممکن است قبل از فراخوانی load_dotenv() در bot.py ایمپورت شود،
-# پس برای اطمینان از خواندن صحیح متغیرهای محیطی (مثل ADMIN_IDS) این‌جا هم
-# load_dotenv را صدا می‌زنیم. صدا زدن چندباره‌ی آن مشکلی ایجاد نمی‌کند.
-load_dotenv()
-
-# ─── تنظیمات اسکرپینگ ───────────────────────────────────────────────────────
-# به‌جای اسکرپ در لحظه‌ی هر درخواست کاربر، هر SCRAPE_INTERVAL_SECONDS ثانیه
-# یک‌بار در پس‌زمینه اسکرپ انجام و نتیجه در فایل data/prices.json ذخیره می‌شود.
-# هندلرهای ربات فقط همین فایل را می‌خوانند.
-SCRAPE_INTERVAL_SECONDS = 30
+# ─── تنظیمات کش/اسکرپ ────────────────────────────────────────────────────────
+# به جای اسکرپ در لحظه‌ی هر درخواست، یک ترد پس‌زمینه هر SCRAPE_INTERVAL ثانیه
+# یک‌بار قیمت‌ها را می‌گیرد و در CACHE_FILE ذخیره می‌کند. هندلرها فقط همین فایل
+# را می‌خوانند و هرگز مستقیماً به tgju.org درخواست نمی‌زنند.
+SCRAPE_INTERVAL = 30  # ثانیه
 
 REQUEST_TIMEOUT = 50
 
@@ -22,15 +15,28 @@ USER_AGENT = (
     "Chrome/137.0 Safari/537.36"
 )
 
-# پوشه‌ی داده‌ها روی سرور (قیمت‌ها، کاربران، گروه‌های مجاز)
+# پوشه‌ی داده روی سرور؛ فایل‌های کش قیمت و اطلاعات کاربران/گروه‌ها اینجا نگه‌داری می‌شوند.
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+CACHE_FILE = os.path.join(DATA_DIR, "prices_cache.json")
+USERS_FILE = os.path.join(DATA_DIR, "users.json")  # فقط fallback محلی، پایین را ببین
+GROUPS_FILE = os.path.join(DATA_DIR, "groups.json")  # فقط fallback محلی، پایین را ببین
+
+# ─── ذخیره‌سازی پایدار (Upstash Redis) ───────────────────────────────────────
+# روی پلن رایگان Render دیسک موقتی است و با هر ری‌استارت پاک می‌شود. برای این‌که
+# لیست کاربران/گروه‌ها و وضعیت تاییدشان از بین نرود، این مقادیر را از پنل
+# Upstash (بخش REST API دیتابیس Redis رایگانت) در .env قرار بده:
+UPSTASH_REDIS_REST_URL = os.getenv("UPSTASH_REDIS_REST_URL")
+UPSTASH_REDIS_REST_TOKEN = os.getenv("UPSTASH_REDIS_REST_TOKEN")
 
 
-def _parse_admin_ids(raw: str):
-    """
-    ADMIN_IDS در فایل .env می‌تواند یک یا چند آیدی عددی، جدا شده با کاما باشد:
-    ADMIN_IDS=123456789,987654321
-    """
+# ─── تنظیمات پنل مدیریت ──────────────────────────────────────────────────────
+# آیدی عددی خودت را (نه یوزرنیم!) داخل .env در متغیر ADMIN_IDS قرار بده.
+# می‌توانی چند آیدی را با ویرگول جدا کنی، مثلا: ADMIN_IDS=111111111,222222222
+# آیدی عددی را می‌توانی از بات‌هایی مثل @userinfobot بگیری.
+def _parse_admin_ids() -> set[int]:
+    raw = os.getenv("ADMIN_IDS", "")
     ids = set()
     for part in raw.split(","):
         part = part.strip()
@@ -39,9 +45,11 @@ def _parse_admin_ids(raw: str):
     return ids
 
 
-# آیدی عددی تلگرام شما. برای گرفتن آیدی عددی‌تان کافیست به ربات دستور
-# /myid را بزنید. سپس آن عدد را در فایل .env داخل ADMIN_IDS قرار دهید.
-ADMIN_IDS = _parse_admin_ids(os.getenv("ADMIN_IDS", ""))
+ADMIN_IDS = _parse_admin_ids()
+
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
 
 
 @dataclass(frozen=True)
@@ -99,9 +107,9 @@ ASSETS = {
 
     "btc": Asset(
         key="btc",
-        label="₿ بیت‌کوین",
+        label="₿ بیت کوین",
         command="btc",
-        description="قیمت بیت‌کوین",
+        description="قیمت بیت کوین",
         button="₿ بیت‌کوین",
         keywords=["بیت کوین", "بیت‌کوین"],
         minimum=1000000000
@@ -119,12 +127,12 @@ ASSETS = {
 
     "usdt": Asset(
         key="usdt",
-        label="🔗 تتر",
+        label="₮ تتر",
         command="usdt",
         description="قیمت تتر",
-        button="🔗 تتر",
+        button="₮ تتر",
         keywords=["تتر"],
-        minimum=500000
+        minimum=100000
     ),
 
 }

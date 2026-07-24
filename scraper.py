@@ -1,17 +1,5 @@
-"""
-ماژول اسکرپ قیمت‌ها از tgju.org
-
-تغییر مهم نسبت به قبل:
-به‌جای اسکرپ در همان لحظه‌ای که کاربر درخواست می‌دهد، یک ترد پس‌زمینه
-(start_scraper_loop) هر SCRAPE_INTERVAL_SECONDS ثانیه یک‌بار صفحه را اسکرپ
-کرده و نتیجه را در فایل data/prices.json ذخیره می‌کند. هندلرهای ربات فقط
-از طریق get_prices() همین فایل را می‌خوانند و دیگر مستقیماً درخواست HTTP
-به tgju.org نمی‌زنند. این هم باعث سریع‌تر شدن پاسخ‌گویی ربات می‌شود و هم
-فشار کمتری روی سایت مبدا وارد می‌کند.
-"""
 import json
 import logging
-import os
 import re
 import threading
 import time
@@ -19,17 +7,26 @@ import time
 import requests
 from bs4 import BeautifulSoup
 
-from config import ASSETS, DATA_DIR, REQUEST_TIMEOUT, SCRAPE_INTERVAL_SECONDS, USER_AGENT
+from config import (
+    ASSETS,
+    CACHE_FILE,
+    REQUEST_TIMEOUT,
+    SCRAPE_INTERVAL,
+    USER_AGENT,
+)
 
 logger = logging.getLogger(__name__)
 
-PRICES_FILE = os.path.join(DATA_DIR, "prices.json")
-
+# قفل برای جلوگیری از تداخل خواندن/نوشتن هم‌زمان فایل کش
 _file_lock = threading.Lock()
 
 
-def _scrape_once() -> dict:
-    """یک‌بار صفحه‌ی tgju.org را می‌خواند و دیکشنری قیمت‌ها را برمی‌گرداند."""
+def _scrape_from_web() -> dict:
+    """
+    یک‌بار صفحه‌ی tgju.org را می‌گیرد و قیمت‌های تعریف‌شده در ASSETS را
+    استخراج می‌کند. این تابع فقط توسط ترد پس‌زمینه صدا زده می‌شود، نه به‌صورت
+    مستقیم توسط هندلرهای تلگرام.
+    """
     url = f"https://www.tgju.org/?t={int(time.time())}"
 
     headers = {
@@ -38,7 +35,11 @@ def _scrape_once() -> dict:
         "Pragma": "no-cache",
     }
 
-    response = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=REQUEST_TIMEOUT,
+    )
     response.raise_for_status()
 
     soup = BeautifulSoup(response.text, "html.parser")
@@ -47,14 +48,19 @@ def _scrape_once() -> dict:
     result = {}
 
     for key, asset in ASSETS.items():
+
         found = False
 
         for row in rows:
+
             text = row.get_text()
 
             if any(keyword in text for keyword in asset.keywords):
+
                 for td in row.find_all("td"):
+
                     cell = td.get_text(strip=True)
+
                     match = re.search(r"\d{1,3}(?:,\d{3})+", cell)
 
                     if not match:
@@ -63,8 +69,11 @@ def _scrape_once() -> dict:
                     value = int(match.group().replace(",", ""))
 
                     if value > asset.minimum:
+
                         result[key] = match.group()
+
                         found = True
+
                         break
 
             if found:
@@ -76,83 +85,87 @@ def _scrape_once() -> dict:
     return result
 
 
-def _write_to_file(prices: dict):
-    os.makedirs(DATA_DIR, exist_ok=True)
+def _write_cache(prices: dict) -> None:
     payload = {
         "updated_at": time.time(),
         "prices": prices,
     }
-    tmp_path = PRICES_FILE + ".tmp"
-
     with _file_lock:
+        tmp_path = CACHE_FILE + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
-        os.replace(tmp_path, PRICES_FILE)  # نوشتن اتمیک، جلوگیری از فایل نصفه‌نیمه
+        # جایگزینی اتمیک تا در صورت ری‌استارت وسط نوشتن، فایل خراب نشود
+        import os
+        os.replace(tmp_path, CACHE_FILE)
 
 
-def _read_from_file():
+def _read_cache() -> dict | None:
     with _file_lock:
-        if not os.path.exists(PRICES_FILE):
-            return None
         try:
-            with open(PRICES_FILE, "r", encoding="utf-8") as f:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
-        except (json.JSONDecodeError, OSError) as e:
-            logger.error("خطا در خواندن فایل قیمت‌ها: %s", e)
+        except (FileNotFoundError, json.JSONDecodeError):
             return None
 
 
-def scrape_and_store():
-    """
-    یک‌بار اسکرپ می‌کند و در فایل ذخیره می‌کند.
-    اگر اسکرپ با خطا مواجه شود، فایل قبلی (کش قبلی) دست‌نخورده باقی می‌ماند
-    تا کاربران قیمت‌های نسبتاً تازه را همچنان ببینند.
-    """
+def _scrape_and_store_once() -> None:
     try:
-        prices = _scrape_once()
-        _write_to_file(prices)
-        logger.info("قیمت‌ها با موفقیت به‌روزرسانی و در فایل ذخیره شدند.")
+        prices = _scrape_from_web()
+        _write_cache(prices)
+        logger.info("قیمت‌ها به‌روزرسانی و در فایل ذخیره شدند.")
     except requests.RequestException as e:
-        logger.error("خطا در اسکرپ قیمت‌ها (کش قبلی حفظ شد): %s", e)
+        logger.error("خطا در دریافت صفحه: %s", e)
+    except Exception as e:  # noqa: BLE001 - نمی‌خواهیم ترد پس‌زمینه به‌خاطر خطای غیرمنتظره بمیرد
+        logger.exception("خطای غیرمنتظره در اسکرپ: %s", e)
+
+
+def _scrape_loop() -> None:
+    # همان لحظه‌ی استارت، یک‌بار فوری اسکرپ کن تا فایل کش خالی نماند
+    _scrape_and_store_once()
+
+    while True:
+        time.sleep(SCRAPE_INTERVAL)
+        _scrape_and_store_once()
+
+
+def start_background_scraper() -> None:
+    """
+    اجرای اسکرپر در یک ترد پس‌زمینه‌ی daemon. باید فقط یک‌بار، هنگام
+    بالا آمدن ربات (در bot.py) صدا زده شود.
+    """
+    thread = threading.Thread(target=_scrape_loop, daemon=True)
+    thread.start()
+    logger.info(
+        "اسکرپر پس‌زمینه شروع شد (هر %s ثانیه یک‌بار قیمت‌ها به‌روزرسانی می‌شوند).",
+        SCRAPE_INTERVAL,
+    )
 
 
 def get_prices() -> dict:
     """
-    هندلرهای ربات فقط باید از این تابع استفاده کنند.
-    قیمت‌ها را از فایل ذخیره‌شده روی سرور می‌خواند، نه با اسکرپ مستقیم.
+    این تابعی است که هندلرهای تلگرام باید صدا بزنند. هرگز مستقیماً به
+    tgju.org درخواست نمی‌زند؛ فقط آخرین مقادیر ذخیره‌شده در فایل کش را
+    برمی‌گرداند. اگر فایل هنوز ساخته نشده باشد (مثلاً چند لحظه‌ی اول
+    راه‌اندازی ربات)، به‌صورت اضطراری یک بار مستقیم اسکرپ می‌کند.
     """
-    data = _read_from_file()
+    cached = _read_cache()
 
-    if data and "prices" in data:
-        return data["prices"]
+    if cached and cached.get("prices"):
+        return cached["prices"]
 
-    # اگر ربات همین الان بالا آمده و ترد پس‌زمینه هنوز اولین بار را اسکرپ نکرده،
-    # یک‌بار به‌صورت فوری اسکرپ می‌کنیم تا کاربر اول با خطا مواجه نشود.
-    logger.warning("فایل قیمت‌ها هنوز آماده نیست؛ تلاش برای اسکرپ فوری...")
+    logger.warning("فایل کش هنوز آماده نیست؛ یک اسکرپ اضطراری انجام می‌شود.")
+
     try:
-        prices = _scrape_once()
-        _write_to_file(prices)
+        prices = _scrape_from_web()
+        _write_cache(prices)
         return prices
     except requests.RequestException as e:
-        logger.error("اسکرپ فوری هم ناموفق بود: %s", e)
+        logger.error("خطا در اسکرپ اضطراری: %s", e)
         return {key: "❌ خطای اتصال" for key in ASSETS}
 
 
-def _background_loop():
-    while True:
-        scrape_and_store()
-        time.sleep(SCRAPE_INTERVAL_SECONDS)
-
-
-def start_scraper_loop():
-    """
-    این تابع باید یک‌بار در ابتدای اجرای ربات (در bot.py) فراخوانی شود.
-    یک ترد daemon پس‌زمینه راه می‌اندازد که هر SCRAPE_INTERVAL_SECONDS ثانیه
-    قیمت‌ها را اسکرپ و در فایل ذخیره می‌کند.
-    """
-    t = threading.Thread(target=_background_loop, daemon=True)
-    t.start()
-    logger.info(
-        "حلقه پس‌زمینه‌ی اسکرپ قیمت‌ها آغاز شد (هر %s ثانیه یک‌بار).",
-        SCRAPE_INTERVAL_SECONDS,
-    )
+def get_last_update_timestamp() -> float | None:
+    cached = _read_cache()
+    if cached:
+        return cached.get("updated_at")
+    return None

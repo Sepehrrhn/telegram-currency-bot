@@ -67,3 +67,36 @@ def asset_keyboard(current_key: str) -> InlineKeyboardMarkup:
     ])
 
     return InlineKeyboardMarkup(keyboard)
+
+
+# ─── کیبوردهای پنل مدیریت ─────────────────────────────────────────────────────
+def admin_main_keyboard() -> InlineKeyboardMarkup:
+    """منوی اصلی پنل مدیریت (فقط برای ادمین)"""
+    keyboard = [
+        [InlineKeyboardButton("👥 لیست کاربران", callback_data="admin_users")],
+        [InlineKeyboardButton("👨‍👩‍👧‍👦 گروه‌های تایید شده", callback_data="admin_groups")],
+        [InlineKeyboardButton("🕒 گروه‌های در انتظار تایید", callback_data="admin_pending")],
+        [InlineKeyboardButton("📊 آمار ربات", callback_data="admin_stats")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def admin_back_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_home")]
+    ])
+
+
+def admin_pending_groups_keyboard(pending_groups: list[dict]) -> InlineKeyboardMarkup:
+    """برای هر گروه در انتظار تایید، یک دکمه‌ی تایید می‌سازد."""
+    keyboard = []
+    for group in pending_groups:
+        title = group.get("title") or str(group.get("id"))
+        keyboard.append([
+            InlineKeyboardButton(
+                text=f"✅ تایید «{title}»",
+                callback_data=f"admin_approve_{group['id']}",
+            )
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_home")])
+    return InlineKeyboardMarkup(keyboard)

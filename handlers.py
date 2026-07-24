@@ -1,15 +1,36 @@
-import storage
-from admin import is_admin
-from config import ASSETS
-from scraper import get_prices
+import logging
+
 from telegram import Update
-from keyboards import main_keyboard, asset_keyboard
 from telegram.ext import (
-    ContextTypes,
-    CommandHandler,
     CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
+)
+
+import storage
+from config import ASSETS, is_admin
+from keyboards import (
+    admin_back_keyboard,
+    admin_main_keyboard,
+    admin_pending_groups_keyboard,
+    asset_keyboard,
+    main_keyboard,
+)
+from scraper import get_last_update_timestamp, get_prices
+
+logger = logging.getLogger(__name__)
+
+WELCOME_TEXT = (
+    "👋 *سلام!*\n\n"
+    "به ربات قیمت ارز و طلا خوش آمدید.\n\n"
+    "یکی از گزینه‌های زیر را انتخاب کنید:"
+)
+
+PENDING_GROUP_TEXT = (
+    "⏳ این گروه هنوز توسط مدیر ربات تایید نشده است.\n"
+    "لطفاً با ادمین ربات هماهنگ کنید تا استفاده از ربات در این گروه فعال شود."
 )
 
 
@@ -28,55 +49,54 @@ def format_all(prices: dict) -> str:
     return "\n\n".join(lines)
 
 
-# ─── کنترل دسترسی (ثبت کاربر/گروه + بررسی مجاز بودن گروه) ───────────────────
-async def _track_and_check_access(update: Update) -> bool:
+# ─── ردیابی کاربر/گروه + دروازه‌ی تایید گروه ─────────────────────────────────
+def _track_and_check_allowed(update: Update) -> bool:
     """
-    این تابع در همه‌ی هندلرهای اصلی صدا زده می‌شود:
-    - کاربر فعلی را در لیست کاربران ثبت/به‌روزرسانی می‌کند.
-    - چت‌های خصوصی همیشه مجازند.
-    - مدیر (ADMIN_IDS) همیشه مجاز است، در هر گروهی.
-    - سایر گروه‌ها فقط اگر از پنل ادمین تایید شده باشند مجازند؛ در غیر
-      این صورت گروه (اگر برای اولین‌بار است) ثبت شده و False برگردانده می‌شود.
+    این تابع را باید ابتدای هر هندلری که به کاربر پاسخ می‌دهد صدا زد.
+    - اگر پیام از یک چت خصوصی باشد: کاربر را ثبت می‌کند و همیشه True برمی‌گرداند.
+    - اگر پیام از یک گروه باشد: گروه را ثبت می‌کند و فقط اگر قبلاً توسط ادمین
+      تایید شده باشد True برمی‌گرداند.
     """
-    user = update.effective_user
     chat = update.effective_chat
+    user = update.effective_user
 
-    if user:
-        storage.register_user(user.id, user.username, user.first_name)
-
-    if not chat:
+    if chat is None:
         return True
 
     if chat.type == "private":
+        if user is not None:
+            storage.track_user(user.id, user.username, user.full_name)
         return True
 
-    if user and is_admin(user.id):
-        return True
+    if chat.type in ("group", "supergroup"):
+        storage.track_group(chat.id, chat.title)
+        return storage.is_group_approved(chat.id)
 
-    storage.register_group(chat.id, chat.title)
-    return storage.is_group_allowed(chat.id)
+    return True
+
+
+async def _reply_pending_notice(update: Update) -> None:
+    if update.message:
+        await update.message.reply_text(PENDING_GROUP_TEXT)
 
 
 # ─── هندلرها ─────────────────────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await _track_and_check_access(update):
+    if not _track_and_check_allowed(update):
+        await _reply_pending_notice(update)
         return
 
-    text = (
-        "👋 *سلام\\!*\n\n"
-        "به ربات قیمت ارز و طلا خوش آمدید\\.\n\n"
-        "یکی از گزینه‌های زیر را انتخاب کنید:"
-    )
     await update.message.reply_text(
-        text,
-        parse_mode="MarkdownV2",
+        WELCOME_TEXT,
+        parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
 
 
 def create_asset_handler(key: str):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not await _track_and_check_access(update):
+        if not _track_and_check_allowed(update):
+            await _reply_pending_notice(update)
             return
 
         prices = get_prices()
@@ -92,7 +112,8 @@ def create_asset_handler(key: str):
 
 
 async def send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await _track_and_check_access(update):
+    if not _track_and_check_allowed(update):
+        await _reply_pending_notice(update)
         return
 
     prices = get_prices()
@@ -102,22 +123,6 @@ async def send_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown",
         reply_markup=main_keyboard(),
     )
-
-
-async def myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    دستور کمکی برای گرفتن آیدی عددی کاربر و آیدی عددی گروه. این دستور عمداً
-    از کنترل دسترسی گروه‌ها مستثنی است، چون دقیقاً برای این ساخته شده که
-    مالک بتواند آیدی یک گروهِ هنوز-تاییدنشده را بگیرد و در پنل ادمین تاییدش کند.
-    """
-    user = update.effective_user
-    chat = update.effective_chat
-
-    lines = [f"🆔 آیدی عددی شما: `{user.id}`"]
-    if chat and chat.type != "private":
-        lines.append(f"🆔 آیدی عددی این گروه: `{chat.id}`")
-
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ─── هندلر تشخیص کلیدواژه در متن پیام ────────────────────────────────────────
@@ -146,8 +151,8 @@ async def keyword_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not asset:
         return
 
-    # در گروه‌های غیرمجاز، عمداً بدون پاسخ باقی می‌گذاریم تا اسپم نشود
-    if not await _track_and_check_access(update):
+    if not _track_and_check_allowed(update):
+        await _reply_pending_notice(update)
         return
 
     prices = get_prices()
@@ -164,14 +169,18 @@ async def keyword_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ─── هندلر دکمه‌های شیشه‌ای ──────────────────────────────────────────────────
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    data = query.data
 
-    if not await _track_and_check_access(update):
-        await query.answer()
+    # کال‌بک‌های پنل مدیریت جدا مدیریت می‌شوند
+    if data.startswith("admin_"):
+        await admin_callback_handler(update, context)
         return
 
     await query.answer()
 
-    data = query.data
+    if not _track_and_check_allowed(update):
+        await query.answer("این گروه هنوز تایید نشده است.", show_alert=True)
+        return
 
     prices = get_prices()
 
@@ -183,13 +192,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_keyboard(),
         )
     elif data == "back":
-        text = (
-            "👋 *سلام!*\n\n"
-            "به ربات قیمت ارز و طلا خوش آمدید.\n\n"
-            "یکی از گزینه‌های زیر را انتخاب کنید:"
-        )
         await query.message.edit_text(
-            text,
+            WELCOME_TEXT,
             parse_mode="Markdown",
             reply_markup=main_keyboard(),
         )
@@ -206,12 +210,169 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("دستور ناشناخته")
 
 
+# ─── پنل مدیریت (فقط برای ادمین) ──────────────────────────────────────────────
+async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user is None or not is_admin(user.id):
+        return  # حتی به کاربر عادی اعلام نمی‌کنیم که چنین پنلی وجود دارد
+
+    await update.message.reply_text(
+        "🛠 *پنل مدیریت ربات*",
+        parse_mode="Markdown",
+        reply_markup=admin_main_keyboard(),
+    )
+
+async def approve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user is None or not is_admin(user.id):
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "استفاده: /approve <chat_id>\n"
+            "مثال: /approve -1001234567890"
+        )
+        return
+
+    try:
+        chat_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("chat_id باید یک عدد باشد.")
+        return
+
+    storage.approve_group(chat_id)
+    await update.message.reply_text(f"✅ گروه با آیدی {chat_id} تایید شد.")
+
+def _format_users_list(users: list[dict]) -> str:
+    if not users:
+        return "👥 *کاربران*\n\nهنوز هیچ کاربری ثبت نشده."
+
+    lines = [f"👥 *کاربران* (مجموع: {len(users)})\n"]
+    # آخرین ۳۰ کاربر بر اساس آخرین بازدید
+    recent = sorted(users, key=lambda u: u.get("last_seen", 0), reverse=True)[:30]
+    for u in recent:
+        name = u.get("full_name") or "بدون نام"
+        username = f"@{u['username']}" if u.get("username") else "بدون یوزرنیم"
+        lines.append(f"• {name} ({username}) — `{u['id']}`")
+
+    if len(users) > 30:
+        lines.append(f"\n… و {len(users) - 30} کاربر دیگر")
+
+    return "\n".join(lines)
+
+
+def _format_groups_list(groups: list[dict], title: str) -> str:
+    if not groups:
+        return f"{title}\n\nموردی یافت نشد."
+
+    lines = [f"{title} (مجموع: {len(groups)})\n"]
+    for g in groups:
+        name = g.get("title") or "بدون عنوان"
+        lines.append(f"• {name} — `{g['id']}`")
+    return "\n".join(lines)
+
+
+async def admin_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+
+    if user is None or not is_admin(user.id):
+        await query.answer("⛔️ دسترسی ندارید.", show_alert=True)
+        return
+
+    await query.answer()
+    data = query.data
+
+    if data == "admin_home":
+        await query.message.edit_text(
+            "🛠 *پنل مدیریت ربات*",
+            parse_mode="Markdown",
+            reply_markup=admin_main_keyboard(),
+        )
+
+    elif data == "admin_users":
+        users = storage.get_all_users()
+        await query.message.edit_text(
+            _format_users_list(users),
+            parse_mode="Markdown",
+            reply_markup=admin_back_keyboard(),
+        )
+
+    elif data == "admin_groups":
+        groups = storage.get_approved_groups()
+        await query.message.edit_text(
+            _format_groups_list(groups, "✅ *گروه‌های تایید شده*"),
+            parse_mode="Markdown",
+            reply_markup=admin_back_keyboard(),
+        )
+
+    elif data == "admin_pending":
+        pending = storage.get_pending_groups()
+        if not pending:
+            await query.message.edit_text(
+                "🕒 *گروه‌های در انتظار تایید*\n\nموردی یافت نشد.",
+                parse_mode="Markdown",
+                reply_markup=admin_back_keyboard(),
+            )
+        else:
+            await query.message.edit_text(
+                "🕒 *گروه‌های در انتظار تایید*\n\nروی نام هر گروه بزن تا تایید شود:",
+                parse_mode="Markdown",
+                reply_markup=admin_pending_groups_keyboard(pending),
+            )
+
+    elif data == "admin_stats":
+        users_count = len(storage.get_all_users())
+        approved_count = len(storage.get_approved_groups())
+        pending_count = len(storage.get_pending_groups())
+        last_update = get_last_update_timestamp()
+
+        if last_update:
+            import time
+            seconds_ago = int(time.time() - last_update)
+            freshness = f"{seconds_ago} ثانیه پیش"
+        else:
+            freshness = "هنوز اسکرپ نشده"
+
+        text = (
+            "📊 *آمار ربات*\n\n"
+            f"👥 تعداد کاربران: {users_count}\n"
+            f"✅ گروه‌های تایید شده: {approved_count}\n"
+            f"🕒 گروه‌های در انتظار: {pending_count}\n"
+            f"💹 آخرین به‌روزرسانی قیمت‌ها: {freshness}"
+        )
+        await query.message.edit_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=admin_back_keyboard(),
+        )
+
+    elif data.startswith("admin_approve_"):
+        chat_id = int(data.replace("admin_approve_", ""))
+        storage.approve_group(chat_id)
+
+        pending = storage.get_pending_groups()
+        if pending:
+            await query.message.edit_text(
+                "✅ تایید شد.\n\n🕒 *گروه‌های در انتظار تایید*",
+                parse_mode="Markdown",
+                reply_markup=admin_pending_groups_keyboard(pending),
+            )
+        else:
+            await query.message.edit_text(
+                "✅ تایید شد. دیگر گروهی در انتظار تایید نیست.",
+                parse_mode="Markdown",
+                reply_markup=admin_back_keyboard(),
+            )
+
+
 # ─── ثبت هندلرها ─────────────────────────────────────────────────────────────
 def register_handlers(app):
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("all", send_all))
     app.add_handler(CommandHandler("market", send_all))
-    app.add_handler(CommandHandler("myid", myid))
+    app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("approve", approve_command))
 
     for asset in ASSETS.values():
         app.add_handler(
